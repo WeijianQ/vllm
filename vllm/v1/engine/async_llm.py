@@ -82,6 +82,7 @@ class AsyncLLM(EngineClient):
 
         self.model_config = vllm_config.model_config
         self.vllm_config = vllm_config
+        print(f"{__file__}: Line 86, DEBUG HERE the log_requests is {log_requests}")
         self.log_requests = log_requests
         self.log_stats = log_stats
 

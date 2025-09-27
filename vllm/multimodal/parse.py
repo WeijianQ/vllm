@@ -84,7 +84,10 @@ class ProcessorBatchItems(ModalityDataItems[Sequence[_T], _T]):
         return self.data[index]
 
     def get_processor_data(self) -> Mapping[str, object]:
-        return {f"{self.modality}s": self.data}
+        if self.modality == "memory":
+            return {self.modality: self.data}
+        else:
+            return {f"{self.modality}s": self.data}
 
     def get_passthrough_data(self) -> Mapping[str, object]:
         return {}
@@ -208,6 +211,10 @@ class ImageProcessorItems(ProcessorBatchItems[HfImageItem]):
 
         assert_never(image)
 
+class MemoryProcessorItems(ProcessorBatchItems[str]):
+
+    def __init__(self, data: Sequence[str]) -> None:
+        super().__init__(data, "memory")
 
 class ImageEmbeddingItems(EmbeddingItems):
 
@@ -431,12 +438,27 @@ class MultiModalDataParser:
 
         return VideoProcessorItems(data_items)
 
+    def _parse_memory_data(
+        self,
+        data: ModalityData[str],
+    ) -> Optional[ModalityDataItems[Any, Any]]:
+        if (is_list_of(data, str)):
+            data_items = data
+        elif isinstance(data, str):
+            data_items = [data]
+        else:
+            raise ValueError(f"Unsupported type of memory data: {type(data)}")
+
+        return MemoryProcessorItems(data_items)
+
     def _get_subparsers(self) -> Mapping[str, ModalityDataParser]:
         return {
             "audio": self._parse_audio_data,
             "image": self._parse_image_data,
             "video": self._parse_video_data,
+            "memory": self._parse_memory_data,
         }
+    
 
     def parse_mm_data(self,
                       mm_data: MultiModalDataDict) -> MultiModalDataItems:

@@ -224,6 +224,10 @@ _SPECULATIVE_DECODING_MODELS = {
 _TRANSFORMERS_MODELS = {
     "TransformersForCausalLM": ("transformers", "TransformersForCausalLM"),
 }
+
+_CUSTOM_MEMORY_MODELS = {
+    "Qwen2_5_MemoryForCausalLM": ("qwen2_5_memory", "Qwen2_5_MemoryForCausalLM"),
+}
 # yapf: enable
 
 _VLLM_MODELS = {
@@ -233,6 +237,7 @@ _VLLM_MODELS = {
     **_MULTIMODAL_MODELS,
     **_SPECULATIVE_DECODING_MODELS,
     **_TRANSFORMERS_MODELS,
+    **_CUSTOM_MEMORY_MODELS,
 }
 
 # This variable is used as the args for subprocess.run(). We

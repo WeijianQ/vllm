@@ -1227,14 +1227,24 @@ class BaseMultiModalProcessor(ABC, Generic[_I]):
         """
         processor_data, passthrough_data = self._get_hf_mm_data(mm_items)
 
-        processed_data = self._call_hf_processor(
-            prompt=prompt_text,
-            mm_data=processor_data,
-            mm_kwargs=hf_processor_mm_kwargs,
-        )
+        try:
+            processed_data = self._call_hf_processor(
+                prompt=prompt_text,
+                mm_data=processor_data,
+                mm_kwargs=hf_processor_mm_kwargs,
+            )
+        except Exception as e:
+            print(e)
+            from src.utils import wait_for_debugger
+            wait_for_debugger()
         processed_data.update(passthrough_data)
 
-        prompt_ids, = processed_data.pop("input_ids").tolist()
+        try:
+            prompt_ids, = processed_data.pop("input_ids").tolist()
+        except Exception as e:
+            from src.utils import wait_for_debugger
+            wait_for_debugger()
+            raise e
 
         mm_kwargs = MultiModalKwargs.from_hf_inputs(
             processed_data,

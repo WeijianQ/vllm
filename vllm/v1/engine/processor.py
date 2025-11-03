@@ -203,9 +203,10 @@ class Processor:
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
     ) -> tuple[Optional[str], EngineCoreRequest]:
-
         # TODO(woosuk): Support pooling models.
         # TODO(woosuk): Support encoder-decoder models.
+
+        
         self._validate_lora(lora_request)
         self._validate_params(params)
         if priority != 0:

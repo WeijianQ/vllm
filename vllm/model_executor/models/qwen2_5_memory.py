@@ -39,15 +39,15 @@ class Qwen2_5_MemoryEncoder(nn.Module):
 
         device = self.vllm_config.device_config.device   # torch.device("cuda")
         dtype  = getattr(self.vllm_config, "dtype", torch.float16)
-        self.hf_model = AutoModelForCausalLM.from_pretrained(
-            self.model_path,
-            config=cfg,
+
+        # Use from_config instead of from_pretrained - no weight loading!
+        self.hf_model = AutoModelForCausalLM.from_config(
+            cfg,
             torch_dtype=dtype,
             trust_remote_code=True,
             attn_implementation="flash_attention_2",
-            device_map={"": 0} 
-        ).eval()
-        self.hf_model.loaded_pretrained_weights = True
+        ).to(device).eval()
+
         del self.hf_model.lm_head
 
     @torch.no_grad()
@@ -55,9 +55,12 @@ class Qwen2_5_MemoryEncoder(nn.Module):
         return self.hf_model.encode(input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids)
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
-        if self.hf_model.loaded_pretrained_weights:
-            return set([name[0] for name in self.named_parameters()])
-        raise NotImplementedError("load_weights is not implemented for Qwen2_5_MemoryEncoder")
+        state_dict = {name: data for name, data in weights}
+        # Remove lm_head since we deleted it in __init__
+        if "lm_head.weight" in state_dict:
+            del state_dict["lm_head.weight"]
+        self.hf_model.load_state_dict(state_dict, strict=False)
+        return set(state_dict.keys())
         
 from vllm.multimodal.processing import BaseProcessingInfo, BaseMultiModalProcessor, PromptReplacement
 class Qwen2_5_MemoryProcessingInfo(BaseProcessingInfo):
@@ -148,6 +151,7 @@ class Qwen2_5_MemoryForCausalLM(nn.Module, SupportsMultiModal):
         return inputs_embeds
 
     def _pad_mem_ids(self, ids_or_mask: torch.Tensor, target_len: int, pad_id: int) -> torch.Tensor:
+        """Pad a single tensor to target length with left padding."""
         batch_size, seq_len = ids_or_mask.shape
         if seq_len >= target_len:
             return ids_or_mask[:, -target_len:]
@@ -156,37 +160,144 @@ class Qwen2_5_MemoryForCausalLM(nn.Module, SupportsMultiModal):
         # we do left padding
         return padded_
 
+    def _collate_memory_inputs(
+        self,
+        mem_ids_list: list[torch.Tensor],
+        mem_mask_list: Optional[list[torch.Tensor]]
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor], list[int]]:
+        """
+        Collate (pad and batch) a list of memory input tensors.
+
+        Args:
+            mem_ids_list: List of memory input_ids tensors, each of shape (num_items, seq_len)
+            mem_mask_list: Optional list of attention masks
+
+        Returns:
+            Tuple of:
+                - Batched and padded mem_ids: (total_items, max_len)
+                - Batched and padded mem_mask: (total_items, max_len) or None
+                - num_sequences: List of number of items per request
+        """
+        max_len = max(m.shape[1] for m in mem_ids_list)
+        num_sequences = [m.shape[0] for m in mem_ids_list]
+
+        # Pad all tensors to max_len
+        mem_ids_padded = [self._pad_mem_ids(m, max_len, self.config.memory_pad_token_id) for m in mem_ids_list]
+        mem_ids = torch.concat(mem_ids_padded, dim=0)  # (total_batch, max_len)
+
+        # Handle mask
+        if mem_mask_list is not None:
+            mem_mask_padded = [self._pad_mem_ids(m, max_len, 0) for m in mem_mask_list]
+            mem_mask = torch.concat(mem_mask_padded, dim=0)
+        else:
+            mem_mask = None
+
+        return mem_ids, mem_mask, num_sequences
+
+    def _encode_memory_batch(
+        self,
+        mem_ids: torch.Tensor,
+        mem_mask: Optional[torch.Tensor]
+    ) -> list[torch.Tensor]:
+        """
+        Encode a batch of memory inputs.
+
+        Args:
+            mem_ids: Memory input ids tensor of shape (batch_size, seq_len)
+            mem_mask: Optional attention mask of shape (batch_size, seq_len)
+
+        Returns:
+            List of encoded embeddings, one per item in the batch
+        """
+        # Ensure tensors are on correct device and dtype
+        mem_ids = mem_ids.to(dtype=torch.long, device=self.encoder.hf_model.device)
+
+        if mem_mask is None:
+            mem_mask = torch.ones_like(mem_ids, dtype=torch.long)
+        else:
+            mem_mask = mem_mask.to(dtype=torch.long, device=self.encoder.hf_model.device)
+
+        # Encode
+        stacked_embeddings = self.encoder.encode(input_ids=mem_ids, attention_mask=mem_mask)
+
+        # Convert to list of individual embeddings with correct dtype
+        dispatched_embeddings = [
+            embedding.unsqueeze(0).to(dtype=self.language_model_embed_dtype)
+            for embedding in stacked_embeddings
+        ]
+
+        return dispatched_embeddings
+
     def get_multimodal_embeddings(self, **kwargs: object) -> Optional[MultiModalEmbeddings]:
         mem_ids = kwargs.pop("memory_input_ids", None) # batch_size, 1 , max_len
         mem_mask = kwargs.pop("memory_attention_mask", None)   # (B, L)
-        if isinstance(mem_ids, torch.Tensor) and mem_ids.shape[1] == 1:
-            mem_ids = mem_ids.squeeze(1).squeeze(1).to(dtype=torch.long).to(device=self.encoder.hf_model.device) # TODO  make input shuld be 3 dim
-            if mem_mask is None:
-                mem_mask = torch.ones_like(mem_ids, dtype=torch.long).to(device=self.encoder.hf_model.device)
-            else:
-                mem_mask = mem_mask.squeeze(1).to(dtype=torch.long).to(device=self.encoder.hf_model.device)  # (B, L)
-            stacked_embeddings = self.encoder.encode(input_ids=mem_ids, attention_mask=mem_mask)
-            # Expected multimodal embeddings to be a sequence of 2D tensors
-            dispatched_embeddings = [
-                embedding.unsqueeze(0).to(dtype=self.language_model_embed_dtype) for embedding in stacked_embeddings
-            ]
-            return dispatched_embeddings
-        else:
-            max_len = max(m.shape[1] for m in mem_ids)
-            num_sequences = [m.shape[0] for m in mem_ids]
-            mem_ids = [self._pad_mem_ids(m, max_len, self.config.memory_pad_token_id) for m in mem_ids]
-            mem_ids = torch.concat(mem_ids, dim=0).to(dtype=torch.long).to(device=self.encoder.hf_model.device)
-            if mem_mask is not None:
-                mem_mask = [self._pad_mem_ids(m, max_len, 0) for m in mem_mask]
-                mem_mask = torch.concat(mem_mask, dim=0).to(dtype=torch.long).to(device=self.encoder.hf_model.device)
-            else:
-                mem_mask = torch.ones_like(mem_ids, dtype=torch.long).to(device=self.encoder.hf_model.device)
-            stacked_embeddings = self.encoder.encode(input_ids=mem_ids, attention_mask=mem_mask)
 
+        if mem_ids is None:
+            return None
+
+        # if isinstance(mem_ids, list) and len(mem_ids) > 0:
+        #     print(f"DEBUG: mem_ids is a list, len: {len(mem_ids)}")
+
+        # Case 1: Single tensor with shape (batch, 1, seq_len)
+        if isinstance(mem_ids, torch.Tensor) and mem_ids.shape[1] == 1:
+            mem_ids = mem_ids.squeeze(1).squeeze(1)  # (batch, seq_len)
+            mem_mask = mem_mask.squeeze(1) if mem_mask is not None else None
+            return self._encode_memory_batch(mem_ids, mem_mask)
+
+        # Case 2: List of tensors (need padding and batching)
+        else:
+            # Count total items
+            total_items = sum(m.shape[0] for m in mem_ids)
+            num_requests = len(mem_ids)
+            # print(f"DEBUG: Total {total_items} items from {num_requests} requests")
+
+            # Flatten: convert list of (num_items_per_request, seq_len) to flat list
+            flat_mem_ids = []
+            flat_mem_masks = []
+            request_boundaries = [0]  # Track which items belong to which request
+
+            for i, mem_id_tensor in enumerate(mem_ids):
+                num_items = mem_id_tensor.shape[0]
+                for j in range(num_items):
+                    flat_mem_ids.append(mem_id_tensor[j:j+1])  # Keep as (1, seq_len)
+                    if mem_mask is not None:
+                        flat_mem_masks.append(mem_mask[i][j:j+1])
+                request_boundaries.append(request_boundaries[-1] + num_items)
+
+            # Process in batches of 16
+            batch_size = 16
+            num_batches = (total_items + batch_size - 1) // batch_size
+            # print(f"  Processing {total_items} items in {num_batches} batches (batch_size={batch_size})")
+
+            all_embeddings = []
+            for batch_idx in range(num_batches):
+                start_idx = batch_idx * batch_size
+                end_idx = min(start_idx + batch_size, total_items)
+                batch_mem_ids = flat_mem_ids[start_idx:end_idx]
+                batch_mem_masks = flat_mem_masks[start_idx:end_idx] if mem_mask is not None else None
+
+                # print(f"    Batch {batch_idx + 1}/{num_batches}: items [{start_idx}:{end_idx}] (size={end_idx - start_idx})")
+
+                # Collate this batch
+                collated_ids, collated_mask, _ = self._collate_memory_inputs(batch_mem_ids, batch_mem_masks)
+                # print(f"      Collated shape: {collated_ids.shape}")
+
+                # Encode this batch
+                batch_embeddings = self._encode_memory_batch(collated_ids, collated_mask)
+                all_embeddings.extend(batch_embeddings)
+
+            # print(f"  Total embeddings collected: {len(all_embeddings)}")
+
+            # Group embeddings by request
             dispatched_embeddings = []
-            for i in range(len(num_sequences)):
-                current_embeddings = stacked_embeddings[i * num_sequences[i]: (i + 1) * num_sequences[i]]
-                dispatched_embeddings.append(current_embeddings.to(dtype=self.language_model_embed_dtype))
+            for i in range(num_requests):
+                start_idx = request_boundaries[i]
+                end_idx = request_boundaries[i + 1]
+                request_embeddings = all_embeddings[start_idx:end_idx]
+                # Stack into single tensor
+                stacked = torch.cat(request_embeddings, dim=0)
+                dispatched_embeddings.append(stacked.to(dtype=self.language_model_embed_dtype))
+
             return dispatched_embeddings
 
 
@@ -197,7 +308,7 @@ class Qwen2_5_MemoryForCausalLM(nn.Module, SupportsMultiModal):
         language_model_loaded = self.language_model.load_weights(weights_wo_embed_head)
         loaded.update([f"language_model.{name}" for name in language_model_loaded])
         encoder_loaded = self.encoder.load_weights(weights)
-        loaded.update([f"encoder.{name}" for name in encoder_loaded])
+        loaded.update([f"encoder.hf_model.{name}" for name in encoder_loaded])
         return loaded
 
     def compute_logits(

@@ -1235,15 +1235,11 @@ class BaseMultiModalProcessor(ABC, Generic[_I]):
             )
         except Exception as e:
             print(e)
-            from src.utils import wait_for_debugger
-            wait_for_debugger()
         processed_data.update(passthrough_data)
 
         try:
             prompt_ids, = processed_data.pop("input_ids").tolist()
         except Exception as e:
-            from src.utils import wait_for_debugger
-            wait_for_debugger()
             raise e
 
         mm_kwargs = MultiModalKwargs.from_hf_inputs(

@@ -49,6 +49,8 @@ class MirroredProcessingCache:
             return mm_inputs
 
         full_mm_inputs = list[Optional[MultiModalKwargs]]()
+        # for debug
+        # hit_cache_cnt = 0
         for mm_input, mm_hash in zip(mm_inputs, mm_hashes):
             if self.mm_cache.get(mm_hash) is not None:
                 mm_input = None
@@ -56,7 +58,8 @@ class MirroredProcessingCache:
                 self.mm_cache[mm_hash] = mm_input
 
             full_mm_inputs.append(mm_input)
-
+        # if hit_cache_cnt > 0:
+        #     print(f"Hit cache cnt: {hit_cache_cnt}")
         return full_mm_inputs
 
     def get_and_update_p1(

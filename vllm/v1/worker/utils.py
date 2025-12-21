@@ -26,7 +26,7 @@ def sanity_check_mm_encoder_outputs(
 
     assert all(e.ndim == 2 for e in mm_embeddings), (
         "Expected multimodal embeddings to be a sequence of 2D tensors, "
-        f"but got tensors with shapes {[e.shape for e in mm_embeddings]} "
+        f"but got tensors with shapes {[e.shape for e in mm_embeddings][:5]}... "
         "instead. This is most likely due to incorrect implementation "
         "of the model's `get_multimodal_embeddings` method.")
 

@@ -177,12 +177,21 @@ class Worker(WorkerBase):
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
 
-        _, total_gpu_memory = torch.cuda.mem_get_info()
+        free_before_profile, total_gpu_memory = torch.cuda.mem_get_info()
+        # print(f"DEBUG Before profile_run():")
+        # print(f"  Total GPU memory: {total_gpu_memory / (1024**3):.2f} GiB")
+        # print(f"  Free memory: {free_before_profile / (1024**3):.2f} GiB")
+        # print(f"  Used memory: {(total_gpu_memory - free_before_profile) / (1024**3):.2f} GiB")
+
         # Execute a forward pass with dummy inputs to profile the memory usage
         # of the model.
         self.model_runner.profile_run()
 
         free_gpu_memory, _ = torch.cuda.mem_get_info()
+        # print(f"DEBUG After profile_run():")
+        # print(f"  Free memory: {free_gpu_memory / (1024**3):.2f} GiB")
+        # print(f"  Used memory: {(total_gpu_memory - free_gpu_memory) / (1024**3):.2f} GiB")
+        # print(f"  Memory consumed by profile_run: {(free_before_profile - free_gpu_memory) / (1024**3):.2f} GiB")
         # NOTE(woosuk): Here we assume that the other processes using the same
         # GPU did not change their memory usage during the profiling.
         assert self.init_gpu_memory > free_gpu_memory, (
@@ -192,7 +201,13 @@ class Worker(WorkerBase):
             "not properly cleaned up before initializing the vLLM instance.")
 
         # Get the peak memory allocation recorded by torch
-        peak_memory = torch.cuda.memory_stats()["allocated_bytes.all.peak"]
+        mem_stats = torch.cuda.memory_stats()
+        peak_memory = mem_stats["allocated_bytes.all.peak"]
+        # print(f"DEBUG Peak Memory Calculation:")
+        # print(f"  PyTorch peak memory (from stats): {peak_memory / (1024**3):.2f} GiB")
+        # print(f"  PyTorch current allocated: {mem_stats['allocated_bytes.all.current'] / (1024**3):.2f} GiB")
+        # print(f"  PyTorch reserved (cached): {mem_stats['reserved_bytes.all.current'] / (1024**3):.2f} GiB")
+        # print(f"  PyTorch peak reserved: {mem_stats['reserved_bytes.all.peak'] / (1024**3):.2f} GiB")
 
         # Check for any memory left around that may have been allocated on the
         # gpu outside of `torch`. NCCL operations, for example, can use a few
@@ -203,11 +218,28 @@ class Worker(WorkerBase):
         total_allocated_bytes = torch.cuda.mem_get_info(
         )[1] - torch.cuda.mem_get_info()[0]
         non_torch_allocations = total_allocated_bytes - torch_allocated_bytes
+        # print(f"  Current torch allocated: {torch_allocated_bytes / (1024**3):.2f} GiB")
+        # print(f"  Total allocated (including non-torch): {total_allocated_bytes / (1024**3):.2f} GiB")
+        # print(f"  Non-torch allocations: {non_torch_allocations / (1024**3):.2f} GiB")
         if non_torch_allocations > 0:
             peak_memory += non_torch_allocations
+            # print(f"  Adjusted peak memory (peak + non-torch): {peak_memory / (1024**3):.2f} GiB")
         available_kv_cache_memory = (
             total_gpu_memory * self.cache_config.gpu_memory_utilization -
             peak_memory)
+
+        # Debug information
+        # print(f"DEBUG Memory Profiling:")
+        # print(f"  Total GPU memory: {total_gpu_memory / (1024**3):.2f} GiB")
+        # print(f"  GPU memory utilization: {self.cache_config.gpu_memory_utilization:.2f}")
+        # print(f"  Target memory: {total_gpu_memory * self.cache_config.gpu_memory_utilization / (1024**3):.2f} GiB")
+        # print(f"  Peak memory usage: {peak_memory / (1024**3):.2f} GiB")
+        # print(f"  Available KV cache memory: {available_kv_cache_memory / (1024**3):.2f} GiB ({available_kv_cache_memory} bytes)")
+
+        # if available_kv_cache_memory < 0:
+        #     print(f"WARNING: Negative available memory detected!")
+        #     print(f"  This means peak_memory ({peak_memory / (1024**3):.2f} GiB) exceeds")
+        #     print(f"  total_gpu_memory * gpu_memory_utilization ({total_gpu_memory * self.cache_config.gpu_memory_utilization / (1024**3):.2f} GiB)")
 
         return int(available_kv_cache_memory)
 

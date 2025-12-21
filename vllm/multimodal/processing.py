@@ -1234,13 +1234,13 @@ class BaseMultiModalProcessor(ABC, Generic[_I]):
                 mm_kwargs=hf_processor_mm_kwargs,
             )
         except Exception as e:
-            print(e)
-        processed_data.update(passthrough_data)
-
-        try:
-            prompt_ids, = processed_data.pop("input_ids").tolist()
-        except Exception as e:
+            print(f"Error in _apply_hf_processor_text_mm: {e}")
+            print(f"prompt_text: {prompt_text}")
+            print(f"mm_items: {mm_items}")
+            print(f"hf_processor_mm_kwargs: {hf_processor_mm_kwargs}")
             raise e
+        processed_data.update(passthrough_data)
+        prompt_ids, = processed_data.pop("input_ids").tolist()
 
         mm_kwargs = MultiModalKwargs.from_hf_inputs(
             processed_data,

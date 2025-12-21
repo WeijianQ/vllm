@@ -696,6 +696,7 @@ def get_kv_cache_config(vllm_config: VllmConfig,
     Returns:
         The generated KVCacheConfigs
     """
+    # print(f"DEBUG: available_memory: {available_memory}")
     check_enough_kv_cache_memory(vllm_config, kv_cache_spec, available_memory)
     unify_hybrid_kv_cache_specs(kv_cache_spec)
     if is_kv_cache_type_uniform(kv_cache_spec):

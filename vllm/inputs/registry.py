@@ -156,8 +156,6 @@ class InputProcessingContext(InputContext):
         except Exception as exc:
             msg = (f"Failed to apply {type(hf_processor).__name__} "
                    f"on data={data} with kwargs={merged_kwargs}")
-            from src.utils import wait_for_debugger
-            wait_for_debugger()
             raise RuntimeError(msg) from exc
 
 

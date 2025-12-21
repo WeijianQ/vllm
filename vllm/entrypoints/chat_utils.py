@@ -117,13 +117,15 @@ class CustomChatCompletionContentSimpleVideoParam(TypedDict, total=False):
     video_url: Required[str]
 
 
-class MemoryText(TypedDict, total=False):
-    text: Required[str]
-
-class CustomChatCompletionTextMemoryContentParam(TypedDict, total=False):
-    type: Required[Literal["memory_text"]]
-    memory_text: Required[MemoryText]
-
+class ChatCompletionContentPartMemoryEmbedsParam(TypedDict, total=False):
+    memory_embeds: Required[Union[str, dict[str, str]]]
+    """
+    The memory embeddings. It can be either:
+    - A single base64 string.
+    - A dictionary where each value is a base64 string.
+    """
+    type: Required[Literal["memory_embeds"]]
+    """The type of the content part."""
 
 
 ChatCompletionContentPartParam: TypeAlias = Union[
@@ -132,8 +134,9 @@ ChatCompletionContentPartParam: TypeAlias = Union[
     ChatCompletionContentPartVideoParam, ChatCompletionContentPartRefusalParam,
     CustomChatCompletionContentSimpleImageParam,
     ChatCompletionContentPartImageEmbedsParam,
+    ChatCompletionContentPartMemoryEmbedsParam,
     CustomChatCompletionContentSimpleAudioParam,
-    CustomChatCompletionContentSimpleVideoParam, str, CustomChatCompletionTextMemoryContentParam]
+    CustomChatCompletionContentSimpleVideoParam, str]
 
 
 class CustomChatCompletionMessageParam(TypedDict, total=False):
@@ -574,9 +577,11 @@ class BaseMultiModalItemTracker(ABC, Generic[_T]):
 
         current_count = len(self._items_by_modality[modality]) + 1
         if current_count > allowed_count:
+
             raise ValueError(
-                f"At most {allowed_count} {modality}(s) may be provided in "
-                "one request. You can set `--limit-mm-per-prompt` to "
+                f"At most {allowed_count} {modality}(s) may be provided in one request. "
+                f"But you provided {current_count} {modality}(s). "
+                "You can set `--limit-mm-per-prompt` to "
                 "increase this limit if the model supports it.")
 
         self._items_by_modality[modality].append(item)
@@ -623,11 +628,21 @@ class MemoryItemTracker(BaseMultiModalItemTracker[object]):
         if not self._items_by_modality:
             return None
         items_by_modality = dict(self._items_by_modality)
-        assert len(items_by_modality) == 1, "Only one modality is allowed"
-        return {"memory": items_by_modality["memory"]}
+
+        # Handle memory_embeds by mapping to memory field
+        if "memory_embeds" in items_by_modality:
+            memory_embeds_lst = items_by_modality["memory_embeds"]
+            # Allow multiple memory observations in one message
+            return {"memory": memory_embeds_lst}
+
+        # Handle regular memory text
+        if "memory" in items_by_modality:
+            return {"memory": items_by_modality["memory"]}
+
+        return None
 
     def _placeholder_str(self, modality, current_count: int) -> str:
-        if self.model_config.hf_config.model_type == "qwen2_5_memory" and modality == "memory":
+        if self.model_config.hf_config.model_type in ("qwen2_5_memory", "qwen3_memory") and (modality == "memory" or modality == "memory_embeds"):
             return "<|mem_start|><|mem_pad|><|mem_end|>"
         return super()._placeholder_str(modality, current_count)
 
@@ -671,12 +686,27 @@ class AsyncMemoryItemTracker(BaseMultiModalItemTracker[Awaitable[object]]):
     async def all_mm_data(self) -> Optional[MultiModalDataDict]:
         if not self._items_by_modality:
             return None
-        items_by_modality = dict(self._items_by_modality)
-        assert len(items_by_modality) == 1, "Only one modality is allowed"
-        return {"memory": items_by_modality["memory"]}
+
+        # Await all async items
+        items_by_modality = {
+            modality: await asyncio.gather(*items)
+            for modality, items in self._items_by_modality.items()
+        }
+
+        # Handle memory_embeds by mapping to memory field
+        if "memory_embeds" in items_by_modality:
+            memory_embeds_lst = items_by_modality["memory_embeds"]
+            # Allow multiple memory observations in one message
+            return {"memory": memory_embeds_lst}
+
+        # Handle regular memory text
+        if "memory" in items_by_modality:
+            return {"memory": items_by_modality["memory"]}
+
+        return None
 
     def _placeholder_str(self, modality, current_count: int) -> str:
-        if self.model_config.hf_config.model_type == "qwen2_5_memory":
+        if self.model_config.hf_config.model_type in ("qwen2_5_memory", "qwen3_memory"):
             return "<|mem_start|><|mem_pad|><|mem_end|>"
         return super()._placeholder_str(modality, current_count)
 
@@ -771,17 +801,23 @@ class MultiModalContentParser(BaseMultiModalContentParser):
         placeholder = self._tracker.add("video", video)
         self._add_placeholder(placeholder)
 
+import torch
 
 class MemoryContentParser(BaseMultiModalContentParser):
     def __init__(self, tracker: MemoryItemTracker) -> None:
         super().__init__()
         self._tracker = tracker
 
-    def parse_memory(self, memory_content: str) -> None:
-        content = memory_content
-        if not content.endswith("<|embed|>"):
-            content = f"{content}<|embed|>"
-        placeholder = self._tracker.add("memory", content)
+    def parse_memory_embeds(self, memory_embeds) -> None:
+        # Accept tensor directly (no base64 decoding needed)
+        if isinstance(memory_embeds, torch.Tensor):
+            placeholder = self._tracker.add("memory_embeds", memory_embeds)
+        elif isinstance(memory_embeds, dict):
+            # Dict of tensors
+            placeholder = self._tracker.add("memory_embeds", memory_embeds)
+        else:
+            raise TypeError(f"memory_embeds must be torch.Tensor or dict, got {type(memory_embeds)}")
+
         self._add_placeholder(placeholder)
 
     def parse_image(self, image_url: str) -> None:
@@ -864,11 +900,21 @@ class AsyncMemoryContentParser(BaseMultiModalContentParser):
     def _raise_not_implemented(self, modality: str) -> None:
         raise NotImplementedError(f"AsyncMemoryContentParser does not support {modality} modality; We use image_url as the only disguised modality")
 
-    def parse_memory(self, memory_content: str) -> None:
-        content = memory_content
-        if not content.endswith("<|embed|>"):
-            content = f"{content}<|embed|>"
-        placeholder = self._tracker.add("memory", content)
+    def parse_memory_embeds(self, memory_embeds) -> None:
+        import asyncio
+
+        future: asyncio.Future = asyncio.Future()
+
+        # Accept tensor directly (no base64 decoding needed)
+        if isinstance(memory_embeds, torch.Tensor):
+            future.set_result(memory_embeds)
+        elif isinstance(memory_embeds, dict):
+            # Dict of tensors
+            future.set_result(memory_embeds)
+        else:
+            raise TypeError(f"memory_embeds must be torch.Tensor or dict, got {type(memory_embeds)}")
+
+        placeholder = self._tracker.add("memory_embeds", future)
         self._add_placeholder(placeholder)
 
     def parse_image(self, image_url: str) -> None:
@@ -983,6 +1029,7 @@ def _get_full_multimodal_text_prompt(placeholder_counts: dict[str, int],
 # No need to validate using Pydantic again
 _TextParser = partial(cast, ChatCompletionContentPartTextParam)
 _ImageEmbedsParser = partial(cast, ChatCompletionContentPartImageEmbedsParam)
+_MemoryEmbedsParser = partial(cast, ChatCompletionContentPartMemoryEmbedsParam)
 _InputAudioParser = partial(cast, ChatCompletionContentPartInputAudioParam)
 _RefusalParser = partial(cast, ChatCompletionContentPartRefusalParam)
 # Need to validate url objects
@@ -999,12 +1046,12 @@ MM_PARSER_MAP: dict[
 ] = {
     "text":
     lambda part: _TextParser(part).get("text", None),
-    "memory_text":
-    lambda part: _TextParser(part).get("memory_text", None).get("text", None),
     "image_url":
     lambda part: _ImageParser(part).get("image_url", {}).get("url", None),
     "image_embeds":
     lambda part: _ImageEmbedsParser(part).get("image_embeds", None),
+    "memory_embeds":
+    lambda part: _MemoryEmbedsParser(part).get("memory_embeds", None),
     "audio_url":
     lambda part: _AudioParser(part).get("audio_url", {}).get("url", None),
     "input_audio":
@@ -1076,7 +1123,7 @@ def _parse_chat_message_content_mm_part(
 VALID_MESSAGE_CONTENT_MM_PART_TYPES = ("text", "refusal", "image_url",
                                        "image_embeds",
                                        "audio_url", "input_audio", "video_url",
-                                       "memory_text")
+                                       "memory_embeds")
 
 
 def _parse_chat_message_content_parts(
@@ -1150,9 +1197,9 @@ def _parse_chat_message_content_part(
         str_content = cast(str, content)
         mm_parser.parse_image(str_content)
         return {'type': 'image'} if wrap_dicts else None
-    if part_type == "memory_text":
-        str_content = cast(str, content)
-        mm_parser.parse_memory(str_content)
+    if part_type == "memory_embeds":
+        content = cast(Union[str, dict[str, str]], content)
+        mm_parser.parse_memory_embeds(content)
         return {'type': 'memory'} if wrap_dicts else None
     if part_type == "image_embeds":
         content = cast(Union[str, dict[str, str]], content)
@@ -1245,7 +1292,7 @@ def parse_chat_messages(
     content_format: _ChatTemplateContentFormat,
 ) -> tuple[list[ConversationMessage], Optional[MultiModalDataDict]]:
     conversation: list[ConversationMessage] = []
-    if model_config.hf_config.model_type == "qwen2_5_memory":
+    if model_config.hf_config.model_type in ("qwen2_5_memory", "qwen3_memory"):
         mm_tracker = MemoryItemTracker(model_config, tokenizer)
     else:
         mm_tracker = MultiModalItemTracker(model_config, tokenizer) # TODO, add multimodal support
@@ -1271,7 +1318,7 @@ def parse_chat_messages_futures(
     content_format: _ChatTemplateContentFormat,
 ) -> tuple[list[ConversationMessage], Awaitable[Optional[MultiModalDataDict]]]:
     conversation: list[ConversationMessage] = []
-    if model_config.hf_config.model_type == "qwen2_5_memory":
+    if model_config.hf_config.model_type in ("qwen2_5_memory", "qwen3_memory"):
         mm_tracker = AsyncMemoryItemTracker(model_config, tokenizer)
     else:
         mm_tracker = AsyncMultiModalItemTracker(model_config, tokenizer) # TODO, add multimodal support

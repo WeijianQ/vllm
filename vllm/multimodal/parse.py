@@ -216,6 +216,29 @@ class MemoryProcessorItems(ProcessorBatchItems[str]):
     def __init__(self, data: Sequence[str]) -> None:
         super().__init__(data, "memory")
 
+
+class MemoryEmbeddingItems(EmbeddingItems):
+
+    def __init__(self, data: Union[torch.Tensor, list[torch.Tensor]]) -> None:
+        super().__init__(data, "memory")
+
+    def get_passthrough_data(self) -> Mapping[str, object]:
+        # Convert list of tensors to a single batched tensor to avoid
+        # extra dimension added by _try_stack during batching
+        if isinstance(self.data, list):
+            # Try to stack all tensors into a single 3D tensor
+            if len(self.data) > 0 and all(
+                isinstance(t, torch.Tensor) and t.ndim == 2 and t.shape == self.data[0].shape
+                for t in self.data
+            ):
+                # All tensors have same 2D shape -> stack into (batch, seq, hidden)
+                batched_data = torch.stack(self.data, dim=0)
+                return {f"{self.modality}_embeds": batched_data}
+
+        # Fall back to default behavior
+        return {f"{self.modality}_embeds": self.data}
+
+
 class ImageEmbeddingItems(EmbeddingItems):
 
     def __init__(self, data: Union[torch.Tensor, list[torch.Tensor]]) -> None:
@@ -442,12 +465,21 @@ class MultiModalDataParser:
         self,
         data: ModalityData[str],
     ) -> Optional[ModalityDataItems[Any, Any]]:
+        # Check if data is empty
+        if self._is_empty(data):
+            return None
+
+        # Check if data is embeddings (torch.Tensor or list[torch.Tensor])
+        if self._is_embeddings(data):
+            return MemoryEmbeddingItems(data)
+
+        # Handle legacy string-based memory data
         if (is_list_of(data, str)):
             data_items = data
         elif isinstance(data, str):
             data_items = [data]
         else:
-            raise ValueError(f"Unsupported type of memory data: {type(data)}")
+            raise ValueError(f"Unsupported type of memory data: {type(data)}, data: {data}")
 
         return MemoryProcessorItems(data_items)
 

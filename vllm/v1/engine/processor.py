@@ -377,11 +377,12 @@ class Processor:
                 suggestion = (
                     "Make sure that `max_model_len` is no smaller than the "
                     "number of text tokens.")
-
+            decoded_prompt = tokenizer.decode(prompt_ids)
             raise ValueError(
                 f"The {prompt_type} prompt (length {len(prompt_ids)}) is "
                 f"longer than the maximum model length of {max_prompt_len}. "
-                f"{suggestion}")
+                f"{suggestion}"
+                f"Decoded prompt: {decoded_prompt}")
 
             # TODO: Find out how many placeholder tokens are there so we can
             # check that chunked prefill does not truncate them

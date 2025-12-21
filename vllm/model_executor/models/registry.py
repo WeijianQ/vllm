@@ -227,6 +227,8 @@ _TRANSFORMERS_MODELS = {
 
 _CUSTOM_MEMORY_MODELS = {
     "Qwen2_5_MemoryForCausalLM": ("qwen2_5_memory", "Qwen2_5_MemoryForCausalLM"),
+    "Qwen3MemoryForCausalLM": ("qwen3_memory", "Qwen3MemoryForCausalLM"),
+    "Qwen3_MemoryForCausalLM": ("qwen3_memory", "Qwen3MemoryForCausalLM"),  # alias with underscore
 }
 # yapf: enable
 

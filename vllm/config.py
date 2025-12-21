@@ -1875,6 +1875,9 @@ class SchedulerConfig:
     is_multimodal_model: bool = False
     """True if the model is multimodal."""
 
+    model_type: Optional[str] = None
+    """Model type for special handling (e.g., qwen2_5_memory)."""
+
     # TODO (ywang96): Make this configurable.
     max_num_encoder_input_tokens: int = field(init=False)
     """Multimodal encoder compute budget, only used in V1.
@@ -1997,7 +2000,17 @@ class SchedulerConfig:
                 )
 
         self.max_num_encoder_input_tokens = self.max_num_batched_tokens
-        self.encoder_cache_size = self.max_num_batched_tokens
+
+        # Special handling for qwen2_5_memory: use small encoder cache
+        # since it only accepts pre-computed embeddings
+        if self.model_type == "qwen2_5_memory":
+            self.encoder_cache_size = 16  # Small value to skip expensive profiling
+            logger.info(
+                "Detected qwen2_5_memory model. Setting encoder_cache_size to %d "
+                "since model only accepts pre-computed embeddings.",
+                self.encoder_cache_size)
+        else:
+            self.encoder_cache_size = self.max_num_batched_tokens
 
         if self.enable_chunked_prefill:
             logger.info(

@@ -802,6 +802,11 @@ class MultiModalContentParser(BaseMultiModalContentParser):
         self._add_placeholder(placeholder)
 
 import torch
+from vllm.multimodal.image import ImageEmbeddingMediaIO
+
+# Reuse ImageEmbeddingMediaIO for memory embeddings (same format: torch.save/load)
+_memory_embedding_io = ImageEmbeddingMediaIO()
+
 
 class MemoryContentParser(BaseMultiModalContentParser):
     def __init__(self, tracker: MemoryItemTracker) -> None:
@@ -809,15 +814,22 @@ class MemoryContentParser(BaseMultiModalContentParser):
         self._tracker = tracker
 
     def parse_memory_embeds(self, memory_embeds) -> None:
-        # Accept tensor directly (no base64 decoding needed)
+        # Accept tensor directly or base64-encoded tensor
         if isinstance(memory_embeds, torch.Tensor):
-            placeholder = self._tracker.add("memory_embeds", memory_embeds)
+            tensor = memory_embeds
+        elif isinstance(memory_embeds, str):
+            # Decode base64 string to tensor (for HTTP API support)
+            tensor = _memory_embedding_io.load_base64("", memory_embeds)
         elif isinstance(memory_embeds, dict):
-            # Dict of tensors
-            placeholder = self._tracker.add("memory_embeds", memory_embeds)
+            # Dict of tensors or base64 strings
+            tensor = {
+                k: (_memory_embedding_io.load_base64("", v) if isinstance(v, str) else v)
+                for k, v in memory_embeds.items()
+            }
         else:
-            raise TypeError(f"memory_embeds must be torch.Tensor or dict, got {type(memory_embeds)}")
+            raise TypeError(f"memory_embeds must be torch.Tensor, str (base64), or dict, got {type(memory_embeds)}")
 
+        placeholder = self._tracker.add("memory_embeds", tensor)
         self._add_placeholder(placeholder)
 
     def parse_image(self, image_url: str) -> None:
@@ -905,15 +917,22 @@ class AsyncMemoryContentParser(BaseMultiModalContentParser):
 
         future: asyncio.Future = asyncio.Future()
 
-        # Accept tensor directly (no base64 decoding needed)
+        # Accept tensor directly or base64-encoded tensor
         if isinstance(memory_embeds, torch.Tensor):
-            future.set_result(memory_embeds)
+            tensor = memory_embeds
+        elif isinstance(memory_embeds, str):
+            # Decode base64 string to tensor (for HTTP API support)
+            tensor = _memory_embedding_io.load_base64("", memory_embeds)
         elif isinstance(memory_embeds, dict):
-            # Dict of tensors
-            future.set_result(memory_embeds)
+            # Dict of tensors or base64 strings
+            tensor = {
+                k: (_memory_embedding_io.load_base64("", v) if isinstance(v, str) else v)
+                for k, v in memory_embeds.items()
+            }
         else:
-            raise TypeError(f"memory_embeds must be torch.Tensor or dict, got {type(memory_embeds)}")
+            raise TypeError(f"memory_embeds must be torch.Tensor, str (base64), or dict, got {type(memory_embeds)}")
 
+        future.set_result(tensor)
         placeholder = self._tracker.add("memory_embeds", future)
         self._add_placeholder(placeholder)
 

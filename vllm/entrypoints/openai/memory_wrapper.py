@@ -123,6 +123,7 @@ class MemoryEncoder:
             self.model_path,
             trust_remote_code=True,
         )
+        self.tokenizer.padding_side = "left"
 
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_path,

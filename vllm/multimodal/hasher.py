@@ -36,6 +36,9 @@ class MultiModalHasher:
 
         # Convertible to NumPy arrays
         if isinstance(obj, torch.Tensor):
+            # NumPy doesn't support BFloat16, convert to float32 first
+            if obj.dtype == torch.bfloat16:
+                obj = obj.float()
             obj = obj.numpy()
         if isinstance(obj, (int, float)):
             obj = np.array(obj)

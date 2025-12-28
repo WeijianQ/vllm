@@ -336,6 +336,8 @@ class AsyncLLM(EngineClient):
             await self.abort(request_id)
             if self.log_requests:
                 logger.info("Request %s failed.", request_id)
+            import traceback
+            traceback.print_exc()
             raise EngineGenerateError() from e
 
     def _run_output_handler(self):
